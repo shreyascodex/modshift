@@ -1,0 +1,393 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email is string &&
+        request.auth.token.email.lower() in [
+          'shreyasghimire71@gmail.com',
+          'shreyasextra65@gmail.com',
+          'modshiftt@gmaill.com'
+        ]
+      );
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isUserNotBanned(userId) {
+      return !('isBanned' in get(/databases/$(database)/documents/users/$(userId)).data)
+        || get(/databases/$(database)/documents/users/$(userId)).data.isBanned == false;
+    }
+
+    // Entity Validators
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'email',
+          'photoURL',
+          'credits',
+          'isBanned',
+          'banReason',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1024))
+        && (!('credits' in data) || (data.credits is int && data.credits >= 0 && data.credits <= 1000000))
+        && (!('isBanned' in data) || data.isBanned is bool)
+        && (!('banReason' in data) || (data.banReason is string && data.banReason.size() <= 240))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCreditTransaction(data, userId) {
+      return data.keys().hasAll(['ownerId', 'amount', 'balanceAfter', 'reason', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'amount', 'balanceAfter', 'reason', 'actorEmail', 'createdAt'])
+        && data.ownerId is string
+        && data.ownerId == userId
+        && isValidId(data.ownerId)
+        && data.amount is int
+        && data.amount >= -100000
+        && data.amount <= 100000
+        && data.amount != 0
+        && data.balanceAfter is int
+        && data.balanceAfter >= 0
+        && data.balanceAfter <= 1000000
+        && data.reason is string
+        && data.reason.size() >= 1
+        && data.reason.size() <= 160
+        && (!('actorEmail' in data) || (data.actorEmail is string && data.actorEmail.size() <= 254))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidMigrationSummary(summary) {
+      return summary is map
+        && summary.keys().hasAll(['total', 'ready', 'noUpdate', 'notFound', 'needsReview', 'failed'])
+        && summary.keys().hasOnly(['total', 'ready', 'noUpdate', 'notFound', 'needsReview', 'failed'])
+        && summary.total is int && summary.total >= 0 && summary.total <= 300
+        && summary.ready is int && summary.ready >= 0 && summary.ready <= 300
+        && summary.noUpdate is int && summary.noUpdate >= 0 && summary.noUpdate <= 300
+        && summary.notFound is int && summary.notFound >= 0 && summary.notFound <= 300
+        && summary.needsReview is int && summary.needsReview >= 0 && summary.needsReview <= 300
+        && summary.failed is int && summary.failed >= 0 && summary.failed <= 300;
+    }
+
+    function isValidSavedMigration(data, userId) {
+      return data.keys().hasAll(['ownerId', 'name', 'gameVersion', 'loader', 'summary', 'items', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'gameVersion', 'loader', 'summary', 'items', 'createdAt'])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && isValidId(data.ownerId)
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 120
+        && data.gameVersion is string
+        && data.gameVersion.size() >= 1
+        && data.gameVersion.size() <= 40
+        && data.loader in ['fabric', 'forge', 'neoforge', 'quilt']
+        && isValidMigrationSummary(data.summary)
+        && data.items is list
+        && data.items.size() >= 1
+        && data.items.size() <= 300
+        && data.items[0] is map
+        && data.createdAt is timestamp;
+    }
+
+    function isValidTrackedMod(data, userId) {
+      return data.keys().hasAll(['ownerId', 'projectId', 'slug', 'title', 'loader', 'targetVersion', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'projectId', 'slug', 'title', 'loader', 'targetVersion', 'latestVersionNumber', 'latestFilename', 'latestDownloadUrl', 'notes', 'createdAt', 'updatedAt'])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && isValidId(data.ownerId)
+        && data.projectId is string
+        && data.projectId.size() >= 1
+        && data.projectId.size() <= 64
+        && isValidId(data.projectId)
+        && data.slug is string
+        && data.slug.size() >= 1
+        && data.slug.size() <= 120
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 120
+        && data.loader in ['fabric', 'forge', 'neoforge', 'quilt']
+        && data.targetVersion is string
+        && data.targetVersion.size() >= 1
+        && data.targetVersion.size() <= 40
+        && (!('latestVersionNumber' in data) || (data.latestVersionNumber is string && data.latestVersionNumber.size() <= 80))
+        && (!('latestFilename' in data) || (data.latestFilename is string && data.latestFilename.size() <= 160))
+        && (!('latestDownloadUrl' in data) || (data.latestDownloadUrl is string && data.latestDownloadUrl.size() <= 512))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 240))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSiteConfig(data) {
+      return data.keys().hasAll([
+          'maintenanceMode',
+          'maintenanceMessage',
+          'newsEnabled',
+          'newsTitle',
+          'newsBody',
+          'newsLevel',
+          'heroHeadline',
+          'heroSubheadline',
+          'workspaceEnabled',
+          'disabledLoaders',
+          'creditsEnabled',
+          'migrationCreditCost',
+          'mrpackCreditCost',
+          'libraryCheckCreditCost',
+          'updatedBy',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'maintenanceMode',
+          'maintenanceMessage',
+          'newsEnabled',
+          'newsTitle',
+          'newsBody',
+          'newsLevel',
+          'heroHeadline',
+          'heroSubheadline',
+          'workspaceEnabled',
+          'disabledLoaders',
+          'creditsEnabled',
+          'migrationCreditCost',
+          'mrpackCreditCost',
+          'libraryCheckCreditCost',
+          'updatedBy',
+          'updatedAt'
+        ])
+        && data.maintenanceMode is bool
+        && data.maintenanceMessage is string && data.maintenanceMessage.size() <= 500
+        && data.newsEnabled is bool
+        && data.newsTitle is string && data.newsTitle.size() <= 120
+        && data.newsBody is string && data.newsBody.size() <= 600
+        && data.newsLevel in ['info', 'warning', 'success']
+        && data.heroHeadline is string && data.heroHeadline.size() >= 1 && data.heroHeadline.size() <= 140
+        && data.heroSubheadline is string && data.heroSubheadline.size() >= 1 && data.heroSubheadline.size() <= 320
+        && data.workspaceEnabled is bool
+        && data.disabledLoaders is list
+        && data.disabledLoaders.size() <= 4
+        && (data.disabledLoaders.size() == 0 || data.disabledLoaders[0] is string)
+        && data.disabledLoaders.hasOnly(['fabric', 'forge', 'neoforge', 'quilt'])
+        && data.creditsEnabled is bool
+        && data.migrationCreditCost is int && data.migrationCreditCost >= 0 && data.migrationCreditCost <= 50
+        && data.mrpackCreditCost is int && data.mrpackCreditCost >= 0 && data.mrpackCreditCost <= 50
+        && data.libraryCheckCreditCost is int && data.libraryCheckCreditCost >= 0 && data.libraryCheckCreditCost <= 50
+        && data.updatedBy is string && request.auth.token.email is string && data.updatedBy.lower() == request.auth.token.email.lower() && data.updatedBy.size() <= 254
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorEmail', 'action', 'details', 'createdAt'])
+        && data.keys().hasOnly(['actorEmail', 'action', 'details', 'createdAt'])
+        && data.actorEmail is string
+        && request.auth.token.email is string
+        && data.actorEmail.lower() == request.auth.token.email.lower()
+        && data.actorEmail.size() <= 254
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 80
+        && data.details is string && data.details.size() >= 1 && data.details.size() <= 320
+        && data.createdAt is timestamp;
+    }
+
+    // Global Site Configuration (doc ID: global)
+    match /siteConfig/{configId} {
+      allow get: if configId == 'global';
+      allow list: if false;
+      allow create: if configId == 'global'
+        && isAdmin()
+        && isValidSiteConfig(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if configId == 'global'
+        && isAdmin()
+        && isValidSiteConfig(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+
+      match /auditLogs/{logId} {
+        allow get: if configId == 'global' && isValidId(logId) && isAdmin();
+        allow list: if configId == 'global' && isAdmin();
+        allow create: if configId == 'global'
+          && isValidId(logId)
+          && isAdmin()
+          && isValidAuditLog(incoming())
+          && incoming().createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    // Users Collection (PII isolated strictly to owner or verified admins)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == request.auth.uid
+        && incoming().credits == 50
+        && incoming().isBanned == false
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Owner profile sync (with one-time starter balance / ban field init for partial legacy docs)
+          (
+            isOwner(userId)
+            && (
+              (!('credits' in existing()) && incoming().credits == 50)
+              || (('credits' in existing()) && incoming().credits == existing().credits)
+            )
+            && (
+              (!('isBanned' in existing()) && incoming().isBanned == false)
+              || (('isBanned' in existing()) && incoming().isBanned == existing().isBanned)
+            )
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'credits', 'isBanned', 'updatedAt'])
+          )
+          // Owner spending credits (strictly decrement-only, max 200 per op, unbanned only)
+          || (
+            isOwner(userId)
+            && (!('isBanned' in existing()) || existing().isBanned == false)
+            && ('credits' in existing())
+            && existing().credits is int
+            && incoming().credits is int
+            && incoming().credits >= 0
+            && incoming().credits < existing().credits
+            && incoming().credits >= existing().credits - 200
+            && incoming().diff(existing()).affectedKeys().hasOnly(['credits', 'updatedAt'])
+          )
+          // Verified Admin credit adjustment or ban moderation
+          || (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['credits', 'isBanned', 'banReason', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+
+      // Credit Transactions Ledger
+      match /creditTransactions/{txId} {
+        allow get: if isValidId(userId)
+          && isValidId(txId)
+          && ((isOwner(userId) && existing().ownerId == request.auth.uid) || isAdmin());
+        allow list: if (isOwner(userId) && resource.data.ownerId == request.auth.uid) || isAdmin();
+        allow create: if isValidId(userId)
+          && isValidId(txId)
+          && isValidCreditTransaction(incoming(), userId)
+          && incoming().createdAt == request.time
+          && (
+            (isOwner(userId) && incoming().ownerId == request.auth.uid && incoming().amount < 0 && incoming().amount >= -200 && !('actorEmail' in incoming()))
+            || (isAdmin() && request.auth.token.email is string && incoming().actorEmail.lower() == request.auth.token.email.lower())
+          )
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update, delete: if false;
+      }
+
+      // Saved Migrations Subcollection
+      match /migrations/{migrationId} {
+        allow get: if isValidId(userId)
+          && isValidId(migrationId)
+          && ((isOwner(userId) && existing().ownerId == request.auth.uid) || isAdmin());
+        allow list: if (isOwner(userId) && resource.data.ownerId == request.auth.uid) || isAdmin();
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(migrationId)
+          && isValidSavedMigration(incoming(), userId)
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isUserNotBanned(userId);
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(migrationId)
+          && isValidSavedMigration(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name'])
+          && isUserNotBanned(userId);
+        allow delete: if isValidId(userId)
+          && isValidId(migrationId)
+          && ((isOwner(userId) && existing().ownerId == request.auth.uid) || isAdmin());
+      }
+
+      // Personal Tracked Mods Subcollection
+      match /mods/{modId} {
+        allow get: if isValidId(userId)
+          && isValidId(modId)
+          && ((isOwner(userId) && existing().ownerId == request.auth.uid) || isAdmin());
+        allow list: if (isOwner(userId) && resource.data.ownerId == request.auth.uid) || isAdmin();
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(modId)
+          && isValidTrackedMod(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isUserNotBanned(userId);
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(modId)
+          && isValidTrackedMod(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().projectId == existing().projectId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'targetVersion',
+            'loader',
+            'notes',
+            'latestVersionNumber',
+            'latestFilename',
+            'latestDownloadUrl',
+            'updatedAt'
+          ])
+          && isUserNotBanned(userId);
+        allow delete: if isValidId(userId)
+          && isValidId(modId)
+          && ((isOwner(userId) && existing().ownerId == request.auth.uid) || isAdmin());
+      }
+    }
+  }
+}

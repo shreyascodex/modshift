@@ -1,0 +1,6 @@
+{
+  "name": "ModShift",
+  "description": "Update your Minecraft modpack without the manual work. Hash mod JARs locally in your browser and find verified compatible versions via Modrinth.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

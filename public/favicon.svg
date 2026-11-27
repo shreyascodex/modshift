@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#09090B" />
+  <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" stroke="#27272A" />
+  <!-- Isometric mod block -->
+  <path d="M32 13L49 22.5L32 32L15 22.5L32 13Z" fill="#22C55E" />
+  <path d="M15 22.5L32 32V51L15 41.5V22.5Z" fill="#15803D" />
+  <path d="M49 22.5L32 32V51L49 41.5V22.5Z" fill="#16A34A" />
+  <!-- Crisp migration shift arrow -->
+  <path
+    d="M25 36.5L38 23.5M38 23.5H28.5M38 23.5V33"
+    stroke="#FAFAFA"
+    stroke-width="3.75"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
