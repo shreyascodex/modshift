@@ -183,7 +183,11 @@ function formatAuthErrorMessage(err: unknown): string {
       return 'Network error while signing in. Check your connection and try again.';
     }
     if (code === 'auth/unauthorized-domain') {
-      return 'This domain is not authorized for Google Sign-In in Firebase Authentication.';
+      const host =
+        typeof window !== 'undefined' && window.location.hostname
+          ? window.location.hostname
+          : 'this domain';
+      return `Domain "${host}" is not authorized for Google Sign-In. Add "${host}" in Firebase Console -> Authentication -> Settings -> Authorized domains.`;
     }
     if (code === 'auth/operation-not-allowed') {
       return 'Google Sign-In is currently disabled in Firebase Authentication.';
@@ -196,6 +200,12 @@ function formatAuthErrorMessage(err: unknown): string {
     }
     if (code === 'auth/account-exists-with-different-credential') {
       return 'An account already exists for this email with a different sign-in provider.';
+    }
+    if (code === 'auth/internal-error') {
+      return 'Google sign-in popup failed to initialize. Verify this domain is listed in Firebase Authorized Domains and popups/cookies are enabled.';
+    }
+    if (code === 'auth/app-not-authorized') {
+      return 'This Firebase app is not authorized to use Firebase Authentication.';
     }
   }
   if (err instanceof Error) {
