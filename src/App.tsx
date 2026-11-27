@@ -5,7 +5,10 @@ import {
   ArrowRight,
   Ban,
   BookmarkCheck,
+  Check,
   CheckCircle2,
+  Copy,
+  ExternalLink,
   FolderCog,
   Info,
   Loader2,
@@ -13,6 +16,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Share2,
   User as UserIcon,
   Wrench,
 } from 'lucide-react';
@@ -30,6 +34,7 @@ import { ModDropzone } from './components/ModDropzone';
 import { NotFoundPage } from './components/NotFoundPage';
 import { ResultsDashboard } from './components/ResultsDashboard';
 import { SearchModsPanel } from './components/SearchModsPanel';
+import { SharedPackView } from './components/SharedPackView';
 import { TargetConfigPanel } from './components/TargetConfigPanel';
 import { BRAND_CONFIG, SUPPORTED_LOADERS } from './config/brand';
 import { syncUserProfile, useAuth } from './contexts/AuthContext';
@@ -48,6 +53,12 @@ import {
   subscribeToUserMigrations,
   type SavedMigrationRecord,
 } from './services/savedMigrationsService';
+import {
+  buildSharedPackPath,
+  publishSharedPack,
+  subscribeToUserSharedPacks,
+  type SharedPackRecord,
+} from './services/sharedPacksService';
 import {
   DEFAULT_SITE_CONFIG,
   subscribeToSiteConfig,
@@ -247,24 +258,30 @@ export default function App() {
   const [loadingTrackedMods, setLoadingTrackedMods] = useState(false);
   const [savedMigrations, setSavedMigrations] = useState<SavedMigrationRecord[]>([]);
   const [loadingMigrations, setLoadingMigrations] = useState(false);
+  const [sharedPacks, setSharedPacks] = useState<SharedPackRecord[]>([]);
+  const [loadingSharedPacks, setLoadingSharedPacks] = useState(false);
 
   useEffect(() => {
     if (!authReady || !user) {
       setTrackedMods([]);
       setSavedMigrations([]);
+      setSharedPacks([]);
       setLoadingTrackedMods(false);
       setLoadingMigrations(false);
+      setLoadingSharedPacks(false);
       return;
     }
 
     if (!profileReady) {
       setLoadingTrackedMods(true);
       setLoadingMigrations(true);
+      setLoadingSharedPacks(true);
       return;
     }
 
     setLoadingTrackedMods(true);
     setLoadingMigrations(true);
+    setLoadingSharedPacks(true);
 
     const unsubMods = subscribeToTrackedMods(
       user.uid,
@@ -288,9 +305,21 @@ export default function App() {
       },
     );
 
+    const unsubSharedPacks = subscribeToUserSharedPacks(
+      user.uid,
+      (list) => {
+        setSharedPacks(list);
+        setLoadingSharedPacks(false);
+      },
+      () => {
+        setLoadingSharedPacks(false);
+      },
+    );
+
     return () => {
       unsubMods();
       unsubMigrations();
+      unsubSharedPacks();
     };
   }, [authReady, user, profileReady]);
 
@@ -354,10 +383,13 @@ export default function App() {
     message: string;
   } | null>(null);
 
-  // Saving snapshot / mods to Firestore from Update panel
+  // Saving snapshot / mods / shared link to Firestore from Update panel
   const [snapshotLabel, setSnapshotLabel] = useState('');
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [savingToLibrary, setSavingToLibrary] = useState(false);
+  const [publishingShare, setPublishingShare] = useState(false);
+  const [lastShareId, setLastShareId] = useState<string | null>(null);
+  const [copiedShareLink, setCopiedShareLink] = useState(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -397,6 +429,7 @@ export default function App() {
       setAnalyzedConfig(null);
       setStatusBanner(null);
       setSaveSuccessMsg(null);
+      setLastShareId(null);
       setManualSearchTarget(null);
       setProgress(INITIAL_PROGRESS);
 
@@ -529,6 +562,7 @@ export default function App() {
     setAnalyzedConfig(null);
     setStatusBanner(null);
     setSaveSuccessMsg(null);
+    setLastShareId(null);
     setProgress(INITIAL_PROGRESS);
   }, []);
 
@@ -584,6 +618,7 @@ export default function App() {
     setIsProcessing(true);
     setStatusBanner(null);
     setSaveSuccessMsg(null);
+    setLastShareId(null);
     setResults([]);
     setDependencies([]);
     const snapshotConfig = { ...config };
@@ -902,6 +937,7 @@ export default function App() {
     setAnalyzedConfig(null);
     setStatusBanner(null);
     setSaveSuccessMsg(null);
+    setLastShareId(null);
     setProgress(INITIAL_PROGRESS);
   }, []);
 
@@ -1044,7 +1080,55 @@ export default function App() {
     }
   };
 
-  const handleExportMrpack = useCallback(async () => {
+  const handlePublishShareLink = async () => {
+    if (!user || !analyzedConfig || results.length === 0 || publishingShare) return;
+    if (isBanned && !isAdmin) {
+      setStatusBanner({
+        type: 'error',
+        message: banReason || 'Your account is currently suspended.',
+      });
+      return;
+    }
+
+    setPublishingShare(true);
+    setSaveSuccessMsg(null);
+    setStatusBanner(null);
+    try {
+      const shareId = await publishSharedPack(user, {
+        title:
+          snapshotLabel.trim() ||
+          `ModShift ${analyzedConfig.gameVersion} (${formatLoaderName(analyzedConfig.loader)})`,
+        gameVersion: analyzedConfig.gameVersion,
+        loader: analyzedConfig.loader,
+        results,
+      });
+      setLastShareId(shareId);
+      const fullUrl =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}${buildSharedPackPath(shareId)}`
+          : buildSharedPackPath(shareId);
+      try {
+        await navigator.clipboard.writeText(fullUrl);
+        setCopiedShareLink(true);
+        setTimeout(() => setCopiedShareLink(false), 2000);
+      } catch {
+        // Clipboard blocked
+      }
+      setSaveSuccessMsg('Published public share link (ready mods only, no personal data included).');
+    } catch (err) {
+      setStatusBanner({
+        type: 'error',
+        message:
+          err instanceof Error && !err.message.startsWith('{')
+            ? err.message
+            : 'Could not create shareable modpack link.',
+      });
+    } finally {
+      setPublishingShare(false);
+    }
+  };
+
+  const handleExportMrpack = useCallback(async (options?: { serverOnly?: boolean }) => {
     if (!user || !analyzedConfig || results.length === 0 || isExportingMrpack) return;
     if (isBanned && !isAdmin) {
       setStatusBanner({
@@ -1054,18 +1138,21 @@ export default function App() {
       return;
     }
 
+    const serverOnly = options?.serverOnly === true;
     const hasReadyFiles = results.some(
       (r) =>
         r.category === 'ready' &&
         r.targetFile?.url &&
         r.targetFile.url.startsWith('https://') &&
-        r.targetFile.hashes?.sha1,
+        r.targetFile.hashes?.sha1 &&
+        (!serverOnly || r.project?.server_side !== 'unsupported'),
     );
     if (!hasReadyFiles) {
       setStatusBanner({
         type: 'error',
-        message:
-          'No ready Modrinth mods with verified hashes and download URLs are available to export as .mrpack.',
+        message: serverOnly
+          ? 'No server-compatible Modrinth mods with verified hashes are available to export.'
+          : 'No ready Modrinth mods with verified hashes and download URLs are available to export as .mrpack.',
       });
       return;
     }
@@ -1089,13 +1176,22 @@ export default function App() {
         await spendUserCredits(
           user,
           exportCost,
-          `Exported .mrpack (${analyzedConfig.gameVersion} ${analyzedConfig.loader})`,
+          `Exported ${serverOnly ? 'server ' : ''}.mrpack (${analyzedConfig.gameVersion} ${analyzedConfig.loader})`,
         );
       }
-      const outcome = await exportMrpackArchive(results, analyzedConfig, snapshotLabel);
+      const outcome = await exportMrpackArchive(
+        results,
+        analyzedConfig,
+        snapshotLabel,
+        options,
+      );
       setStatusBanner({
         type: 'info',
-        message: `Exported ${outcome.exportedCount} mods to ${outcome.filename}.`,
+        message: `Exported ${outcome.exportedCount} mods to ${outcome.filename}${
+          outcome.skippedClientOnly > 0
+            ? ` (${outcome.skippedClientOnly} client-only mods excluded)`
+            : ''
+        }.`,
       });
     } catch (err) {
       setStatusBanner({
@@ -1120,9 +1216,12 @@ export default function App() {
     siteConfig.mrpackCreditCost,
   ]);
 
+  const sharedPackMatch = currentPath.match(/^\/pack\/([a-zA-Z0-9_-]+)$/);
+  const sharedPackId = sharedPackMatch ? sharedPackMatch[1] : null;
   const isAdminRoute = currentPath === '/admin';
   const isMaintenanceRoute = currentPath === '/maintenance';
-  const isUnknownRoute = currentPath !== '/' && !isAdminRoute && !isMaintenanceRoute;
+  const isUnknownRoute =
+    currentPath !== '/' && !isAdminRoute && !isMaintenanceRoute && !sharedPackId;
 
   const effectiveView =
     viewMode === 'workspace' && authReady && !user ? 'auth_gate' : viewMode;
@@ -1251,6 +1350,8 @@ export default function App() {
             </div>
             <AdminPanel siteConfig={siteConfig} />
           </div>
+        ) : sharedPackId ? (
+          <SharedPackView shareId={sharedPackId} onGoHome={handleGoLanding} />
         ) : (
           <>
             {siteConfig.newsEnabled && (siteConfig.newsTitle || siteConfig.newsBody) && (
@@ -1577,7 +1678,7 @@ export default function App() {
                 <div ref={resultsAnchorRef} className="scroll-mt-20 space-y-6">
                   {results.length > 0 && analyzedConfig && (
                     <>
-                      {/* Save results to Account bar */}
+                      {/* Save results & publish shareable link bar */}
                       <div className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-900">
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                           <form
@@ -1607,20 +1708,90 @@ export default function App() {
                             </button>
                           </form>
 
-                          <button
-                            type="button"
-                            disabled={savingToLibrary}
-                            onClick={() => void handleSaveMatchedModsToLibrary()}
-                            className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-xs font-medium text-zinc-800 whitespace-nowrap shrink-0 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                          >
-                            {savingToLibrary ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <FolderCog className="h-3.5 w-3.5" aria-hidden="true" />
-                            )}
-                            <span>Save Matched Mods to Library</span>
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={savingToLibrary}
+                              onClick={() => void handleSaveMatchedModsToLibrary()}
+                              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-xs font-medium text-zinc-800 whitespace-nowrap shrink-0 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                            >
+                              {savingToLibrary ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <FolderCog className="h-3.5 w-3.5" aria-hidden="true" />
+                              )}
+                              <span>Save Matched Mods to Library</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={
+                                publishingShare ||
+                                !results.some(
+                                  (r) => r.category === 'ready' && Boolean(r.targetFile?.url),
+                                )
+                              }
+                              onClick={() => void handlePublishShareLink()}
+                              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-xs font-medium text-zinc-800 whitespace-nowrap shrink-0 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                            >
+                              {publishingShare ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <Share2 className="h-3.5 w-3.5" aria-hidden="true" />
+                              )}
+                              <span>Share Pack Link</span>
+                            </button>
+                          </div>
                         </div>
+
+                        {lastShareId && (
+                          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3.5 py-2 text-xs text-emerald-950 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200">
+                            <span className="font-mono truncate">
+                              {typeof window !== 'undefined'
+                                ? `${window.location.origin}${buildSharedPackPath(lastShareId)}`
+                                : buildSharedPackPath(lastShareId)}
+                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const fullUrl =
+                                    typeof window !== 'undefined'
+                                      ? `${window.location.origin}${buildSharedPackPath(lastShareId)}`
+                                      : buildSharedPackPath(lastShareId);
+                                  try {
+                                    await navigator.clipboard.writeText(fullUrl);
+                                    setCopiedShareLink(true);
+                                    setTimeout(() => setCopiedShareLink(false), 1800);
+                                  } catch {
+                                    // Clipboard blocked
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2.5 py-1 text-[11px] font-medium text-emerald-900 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-zinc-900 dark:text-emerald-200"
+                              >
+                                {copiedShareLink ? (
+                                  <>
+                                    <Check className="h-3 w-3" aria-hidden="true" />
+                                    <span>Copied</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="h-3 w-3" aria-hidden="true" />
+                                    <span>Copy</span>
+                                  </>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => navigatePath(buildSharedPackPath(lastShareId))}
+                                className="inline-flex items-center gap-1 rounded bg-emerald-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-emerald-800"
+                              >
+                                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                                <span>Open</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
 
                         {saveSuccessMsg && (
                           <p className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
@@ -1671,11 +1842,16 @@ export default function App() {
                 loadingTrackedMods={loadingTrackedMods}
                 savedMigrations={savedMigrations}
                 loadingMigrations={loadingMigrations}
+                sharedPacks={sharedPacks}
+                loadingSharedPacks={loadingSharedPacks}
                 gameVersions={gameVersions}
                 defaultGameVersion={config.gameVersion}
                 siteConfig={siteConfig}
                 onNavigatePanel={handleNavigatePanel}
                 onLoadSavedMigration={handleLoadSavedMigration}
+                onOpenSharedPack={(shareId) =>
+                  navigatePath(buildSharedPackPath(shareId))
+                }
               />
             )}
 

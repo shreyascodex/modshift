@@ -1,17 +1,24 @@
 import {
   ArrowRight,
+  CheckCircle2,
   Coins,
   FolderCog,
+  Gift,
   History,
   Loader2,
   LogOut,
   RefreshCw,
   Search,
   ShieldCheck,
+  Ticket,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import {
+  DAILY_CLAIM_COOLDOWN_MS,
+  DAILY_CLAIM_CREDITS,
+  claimDailyCredits,
+  redeemPromoCode,
   subscribeToCreditTransactions,
   type CreditTransactionRecord,
 } from '../services/creditsService';
@@ -31,9 +38,34 @@ export function AccountPanel({
   siteConfig,
   onNavigatePanel,
 }: AccountPanelProps) {
-  const { user, credits, isAdmin, profileReady, authBusy, signOutUser } = useAuth();
+  const {
+    user,
+    credits,
+    lastDailyClaimAt,
+    isAdmin,
+    profileReady,
+    authBusy,
+    signOutUser,
+  } = useAuth();
   const [transactions, setTransactions] = useState<CreditTransactionRecord[]>([]);
   const [loadingTxs, setLoadingTxs] = useState(true);
+  const [claimingDaily, setClaimingDaily] = useState(false);
+  const [dailyFeedback, setDailyFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [promoInput, setPromoInput] = useState('');
+  const [redeemingPromo, setRedeemingPromo] = useState(false);
+  const [promoFeedback, setPromoFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -150,6 +182,166 @@ export function AccountPanel({
               </>
             )}
           </span>
+        </div>
+      </div>
+
+      {/* Daily Free Credits & Promo Code Redemption */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Gift className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                <h3 className="font-display text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                  Daily Free Credits (+{DAILY_CLAIM_CREDITS} cr)
+                </h3>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+                Claim {DAILY_CLAIM_CREDITS} free credits once every 24 hours to run migrations and export .mrpack archives.
+              </p>
+            </div>
+          </div>
+
+          {(() => {
+            const elapsed = lastDailyClaimAt ? nowMs - lastDailyClaimAt.getTime() : DAILY_CLAIM_COOLDOWN_MS;
+            const cooldownActive = lastDailyClaimAt !== null && elapsed < DAILY_CLAIM_COOLDOWN_MS;
+            const remainingMs = cooldownActive ? DAILY_CLAIM_COOLDOWN_MS - elapsed : 0;
+            const remHours = Math.floor(remainingMs / (60 * 60 * 1000));
+            const remMins = Math.max(
+              1,
+              Math.ceil((remainingMs % (60 * 60 * 1000)) / (60 * 1000)),
+            );
+
+            return (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400 tabular-nums">
+                  {cooldownActive
+                    ? `Next claim ready in ${remHours}h ${remMins}m`
+                    : 'Ready to claim right now'}
+                </span>
+                <button
+                  type="button"
+                  disabled={claimingDaily || cooldownActive || !profileReady}
+                  onClick={async () => {
+                    if (!user || claimingDaily) return;
+                    setClaimingDaily(true);
+                    setDailyFeedback(null);
+                    try {
+                      const nextBal = await claimDailyCredits(user);
+                      setDailyFeedback({
+                        type: 'success',
+                        message: `Added +${DAILY_CLAIM_CREDITS} daily credits. New balance: ${nextBal}.`,
+                      });
+                    } catch (err) {
+                      setDailyFeedback({
+                        type: 'error',
+                        message:
+                          err instanceof Error && !err.message.startsWith('{')
+                            ? err.message
+                            : 'Unable to claim daily credits right now.',
+                      });
+                    } finally {
+                      setClaimingDaily(false);
+                    }
+                  }}
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-medium text-white whitespace-nowrap shrink-0 hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {claimingDaily ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Coins className="h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  <span>{cooldownActive ? 'Claimed Today' : `Claim +${DAILY_CLAIM_CREDITS} Credits`}</span>
+                </button>
+              </div>
+            );
+          })()}
+
+          {dailyFeedback && (
+            <p
+              className={`mt-3 text-xs font-medium ${
+                dailyFeedback.type === 'success'
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : 'text-red-700 dark:text-red-400'
+              }`}
+            >
+              {dailyFeedback.message}
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex items-center gap-2">
+            <Ticket className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+            <h3 className="font-display text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+              Redeem Promo Code
+            </h3>
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+            Have an event or creator promo code? Redeem it once per account for instant bonus credits.
+          </p>
+
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!user || redeemingPromo || !promoInput.trim()) return;
+              setRedeemingPromo(true);
+              setPromoFeedback(null);
+              try {
+                const res = await redeemPromoCode(user, promoInput);
+                setPromoInput('');
+                setPromoFeedback({
+                  type: 'success',
+                  message: `Redeemed ${res.code} for +${res.creditsGranted} credits (balance: ${res.balanceAfter}).`,
+                });
+              } catch (err) {
+                setPromoFeedback({
+                  type: 'error',
+                  message:
+                    err instanceof Error && !err.message.startsWith('{')
+                      ? err.message
+                      : 'Could not redeem that promo code.',
+                });
+              } finally {
+                setRedeemingPromo(false);
+              }
+            }}
+            className="mt-4 flex items-center gap-2"
+          >
+            <input
+              type="text"
+              maxLength={32}
+              value={promoInput}
+              onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+              placeholder="ENTER-CODE"
+              aria-label="Promo code"
+              className="min-h-9 min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 font-mono text-xs uppercase text-zinc-950 placeholder:text-zinc-400 focus:border-emerald-600 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+            />
+            <button
+              type="submit"
+              disabled={redeemingPromo || !promoInput.trim()}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-zinc-950 px-3.5 py-2 text-xs font-medium text-white whitespace-nowrap shrink-0 hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
+            >
+              {redeemingPromo ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              <span>Redeem</span>
+            </button>
+          </form>
+
+          {promoFeedback && (
+            <p
+              className={`mt-3 text-xs font-medium ${
+                promoFeedback.type === 'success'
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : 'text-red-700 dark:text-red-400'
+              }`}
+            >
+              {promoFeedback.message}
+            </p>
+          )}
         </div>
       </div>
 

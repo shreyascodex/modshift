@@ -1,12 +1,16 @@
 import {
   Archive,
   ArrowRight,
+  Check,
+  Copy,
   Download,
   ExternalLink,
   FolderUp,
+  GitCompare,
   Loader2,
   RefreshCw,
   Search,
+  Share2,
   Trash2,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -24,6 +28,12 @@ import {
   hydrateSavedMigrationResults,
   type SavedMigrationRecord,
 } from '../services/savedMigrationsService';
+import {
+  buildSharedPackPath,
+  deleteSharedPack,
+  publishSharedPack,
+  type SharedPackRecord,
+} from '../services/sharedPacksService';
 import type { SiteConfig } from '../services/siteConfigService';
 import {
   deleteTrackedMod,
@@ -38,12 +48,15 @@ import type {
 } from '../types/migration';
 import { formatLoaderName, getModrinthProjectUrl, sanitizeDisplayName } from '../utils/format';
 import type { WorkspacePanelId } from './AuthGatePanel';
+import { SnapshotDiffModal } from './SnapshotDiffModal';
 
 interface ManageModsPanelProps {
   trackedMods: TrackedModRecord[];
   loadingTrackedMods: boolean;
   savedMigrations: SavedMigrationRecord[];
   loadingMigrations: boolean;
+  sharedPacks: SharedPackRecord[];
+  loadingSharedPacks: boolean;
   gameVersions: GameVersionTag[];
   defaultGameVersion: string;
   siteConfig: SiteConfig;
@@ -53,6 +66,7 @@ interface ManageModsPanelProps {
     config: MigrationTargetConfig,
     label: string,
   ) => void;
+  onOpenSharedPack: (shareId: string) => void;
 }
 
 export function ManageModsPanel({
@@ -60,11 +74,14 @@ export function ManageModsPanel({
   loadingTrackedMods,
   savedMigrations,
   loadingMigrations,
+  sharedPacks,
+  loadingSharedPacks,
   gameVersions,
   defaultGameVersion,
   siteConfig,
   onNavigatePanel,
   onLoadSavedMigration,
+  onOpenSharedPack,
 }: ManageModsPanelProps) {
   const { user, credits, isAdmin } = useAuth();
   const [filterText, setFilterText] = useState('');
@@ -76,6 +93,10 @@ export function ManageModsPanel({
   const [checkingSingleId, setCheckingSingleId] = useState<string | null>(null);
   const [deletingModId, setDeletingModId] = useState<string | null>(null);
   const [deletingMigId, setDeletingMigId] = useState<string | null>(null);
+  const [sharingMigId, setSharingMigId] = useState<string | null>(null);
+  const [deletingShareId, setDeletingShareId] = useState<string | null>(null);
+  const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
+  const [diffOpen, setDiffOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -321,6 +342,67 @@ export function ManageModsPanel({
     }
   };
 
+  const handleCopyShareUrl = async (shareId: string) => {
+    const fullUrl =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}${buildSharedPackPath(shareId)}`
+        : buildSharedPackPath(shareId);
+    try {
+      await navigator.clipboard.writeText(fullUrl);
+      setCopiedShareId(shareId);
+      setTimeout(() => {
+        setCopiedShareId((curr) => (curr === shareId ? null : curr));
+      }, 2000);
+    } catch {
+      // Clipboard blocked
+    }
+  };
+
+  const handleShareMigration = async (rec: SavedMigrationRecord) => {
+    if (!user || sharingMigId) return;
+    setSharingMigId(rec.id);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    try {
+      const hydrated = hydrateSavedMigrationResults(rec);
+      const shareId = await publishSharedPack(user, {
+        title: rec.name,
+        gameVersion: rec.gameVersion,
+        loader: rec.loader,
+        results: hydrated,
+      });
+      await handleCopyShareUrl(shareId);
+      setStatusMessage(
+        `Published shareable modpack link for "${rec.name}" and copied URL to clipboard.`,
+      );
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error && !err.message.startsWith('{')
+          ? err.message
+          : 'Could not publish shareable modpack link.',
+      );
+    } finally {
+      setSharingMigId(null);
+    }
+  };
+
+  const handleDeleteSharedPack = async (shareId: string) => {
+    if (!user || deletingShareId) return;
+    setDeletingShareId(shareId);
+    setErrorMessage(null);
+    try {
+      await deleteSharedPack(shareId);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error && !err.message.startsWith('{')
+          ? err.message
+          : 'Could not revoke shared link.',
+      );
+    } finally {
+      setDeletingShareId(null);
+    }
+  };
+
   return (
     <section aria-labelledby="manage-panel-heading" className="space-y-8">
       {/* Tracked Mods Library */}
@@ -550,13 +632,25 @@ export function ManageModsPanel({
 
       {/* Saved Migration Snapshots */}
       <div className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
-          <h3 className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50">
-            Saved Migration Snapshots ({savedMigrations.length})
-          </h3>
-          <p className="mt-0.5 text-xs text-zinc-600 dark:text-zinc-400">
-            Reopen any previous modpack migration report in the Update panel to download or export again.
-          </p>
+        <div className="flex flex-col gap-3 border-b border-zinc-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800">
+          <div>
+            <h3 className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50">
+              Saved Migration Snapshots ({savedMigrations.length})
+            </h3>
+            <p className="mt-0.5 text-xs text-zinc-600 dark:text-zinc-400">
+              Reopen previous modpack reports, compare two snapshots, or publish a shareable link.
+            </p>
+          </div>
+          {savedMigrations.length >= 2 && (
+            <button
+              type="button"
+              onClick={() => setDiffOpen(true)}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 whitespace-nowrap shrink-0 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+              <GitCompare className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Compare Snapshots</span>
+            </button>
+          )}
         </div>
 
         {loadingMigrations ? (
@@ -594,7 +688,21 @@ export function ManageModsPanel({
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={sharingMigId === rec.id || rec.summary.ready === 0}
+                      onClick={() => void handleShareMigration(rec)}
+                      className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 whitespace-nowrap hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      {sharingMigId === rec.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Share2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      )}
+                      <span>Share Link</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() =>
@@ -631,6 +739,105 @@ export function ManageModsPanel({
           </ul>
         )}
       </div>
+
+      {/* My Shared Modpack Links */}
+      <div className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
+          <h3 className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50">
+            My Shared Modpack Links ({sharedPacks.length})
+          </h3>
+          <p className="mt-0.5 text-xs text-zinc-600 dark:text-zinc-400">
+            Anyone with a link can view and download these modpacks without signing in. Revoke any link anytime.
+          </p>
+        </div>
+
+        {loadingSharedPacks ? (
+          <div className="flex items-center justify-center py-8 text-xs text-zinc-500">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+            <span>Loading shared links...</span>
+          </div>
+        ) : sharedPacks.length === 0 ? (
+          <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
+            No shared modpack links published yet. Use &ldquo;Share Link&rdquo; on any migration result or saved snapshot.
+          </p>
+        ) : (
+          <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            {sharedPacks.map((pack) => {
+              const createdStr = pack.createdAt
+                ? pack.createdAt.toDate().toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                  })
+                : 'Just now';
+              return (
+                <li
+                  key={pack.id}
+                  className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">
+                      {pack.title}
+                    </p>
+                    <p className="mt-0.5 text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
+                      Minecraft {pack.gameVersion} · {formatLoaderName(pack.loader)} ·{' '}
+                      {pack.modCount} ready mods · Shared {createdStr}
+                    </p>
+                    <p className="mt-0.5 truncate font-mono text-[11px] text-zinc-400">
+                      {buildSharedPackPath(pack.id)}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyShareUrl(pack.id)}
+                      className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 whitespace-nowrap hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      {copiedShareId === pack.id ? (
+                        <>
+                          <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Copy URL</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onOpenSharedPack(pack.id)}
+                      className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white whitespace-nowrap hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Open</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={deletingShareId === pack.id}
+                      onClick={() => void handleDeleteSharedPack(pack.id)}
+                      aria-label={`Revoke shared link ${pack.title}`}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 text-zinc-500 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-700 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <SnapshotDiffModal
+        open={diffOpen}
+        snapshots={savedMigrations}
+        onClose={() => setDiffOpen(false)}
+      />
     </section>
   );
 }

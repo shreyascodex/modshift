@@ -70,5 +70,30 @@ assert.ok(
   rulesSource.includes('incoming().createdAt == request.time'),
   'Must enforce server timestamp integrity on create',
 );
+assert.ok(
+  rulesSource.includes('match /sharedPacks/{shareId}') &&
+    rulesSource.includes('isValidSharedPack(incoming())') &&
+    rulesSource.includes("allow list: if (isVerifiedUser() && resource.data.ownerId == request.auth.uid) || isAdmin();"),
+  'Must allow direct shareId lookup while restricting sharedPacks queries to owner or admin',
+);
+assert.ok(
+  rulesSource.includes('match /promoCodes/{codeId}') &&
+    rulesSource.includes('match /redemptions/{userId}') &&
+    rulesSource.includes('isValidPromoCode(incoming(), codeId)') &&
+    rulesSource.includes('isValidPromoRedemption(incoming(), codeId, userId)'),
+  'Must enforce strict validation and single-use atomic redemptions on promoCodes',
+);
+assert.ok(
+  rulesSource.includes("duration.value(24, 'h')") &&
+    rulesSource.includes('incoming().credits == existing().credits + 10') &&
+    rulesSource.includes("'lastDailyClaimAt'"),
+  'Must enforce strict 24-hour cooldown and +10 amount on daily free credit claims',
+);
+assert.ok(
+  rulesSource.includes("'lastPromoCode'") &&
+    rulesSource.includes("'promoCode'"),
+  'Must enforce atomic promo redemption references on user profile and ledger',
+);
 
 console.log('Firestore rules structural & Eight Pillars checks passed.');
+

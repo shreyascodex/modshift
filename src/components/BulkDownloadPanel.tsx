@@ -27,7 +27,8 @@ import { formatBytes } from '../utils/format';
 interface BulkDownloadPanelProps {
   readyResults: ModMigrationResult[];
   config: MigrationTargetConfig;
-  onExportMrpack?: () => Promise<void> | void;
+  serverOnlyExport?: boolean;
+  onExportMrpack?: (options?: { serverOnly?: boolean }) => Promise<void> | void;
   isExportingMrpack?: boolean;
   mrpackCreditCost?: number;
   creditsEnabled?: boolean;
@@ -38,6 +39,7 @@ interface BulkDownloadPanelProps {
 export function BulkDownloadPanel({
   readyResults,
   config,
+  serverOnlyExport = false,
   onExportMrpack,
   isExportingMrpack = false,
   mrpackCreditCost = 2,
@@ -161,7 +163,8 @@ export function BulkDownloadPanel({
             <span className="font-mono tabular-nums font-medium text-zinc-900 dark:text-zinc-100">
               {queue.length}
             </span>{' '}
-            ready {queue.length === 1 ? 'mod' : 'mods'} ({formatBytes(totalSize)}) · Files download directly from{' '}
+            {serverOnlyExport ? 'server-compatible ' : 'ready '}
+            {queue.length === 1 ? 'mod' : 'mods'} ({formatBytes(totalSize)}) · Files download directly from{' '}
             {hasCurseForgeItems ? "official provider CDNs" : "Modrinth's official CDN"}.
           </p>
         </div>
@@ -229,7 +232,7 @@ export function BulkDownloadPanel({
                 isExportingMrpack ||
                 (creditsEnabled && !isAdmin && mrpackCreditCost > 0 && userCredits < mrpackCreditCost)
               }
-              onClick={() => void onExportMrpack()}
+              onClick={() => void onExportMrpack({ serverOnly: serverOnlyExport })}
               className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-xs font-medium text-zinc-800 whitespace-nowrap shrink-0 transition-colors hover:bg-zinc-100 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
             >
               {isExportingMrpack ? (
@@ -238,7 +241,7 @@ export function BulkDownloadPanel({
                 <Package className="h-4 w-4" aria-hidden="true" />
               )}
               <span>
-                Export .mrpack
+                {serverOnlyExport ? 'Export Server .mrpack' : 'Export .mrpack'}
                 {creditsEnabled && !isAdmin && mrpackCreditCost > 0
                   ? ` (${mrpackCreditCost} cr)`
                   : ''}

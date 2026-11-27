@@ -58,6 +58,8 @@ service cloud.firestore {
           'credits',
           'isBanned',
           'banReason',
+          'lastDailyClaimAt',
+          'lastPromoCode',
           'createdAt',
           'updatedAt'
         ])
@@ -74,13 +76,15 @@ service cloud.firestore {
         && (!('credits' in data) || (data.credits is int && data.credits >= 0 && data.credits <= 1000000))
         && (!('isBanned' in data) || data.isBanned is bool)
         && (!('banReason' in data) || (data.banReason is string && data.banReason.size() <= 240))
+        && (!('lastDailyClaimAt' in data) || data.lastDailyClaimAt is timestamp)
+        && (!('lastPromoCode' in data) || (data.lastPromoCode is string && data.lastPromoCode.size() <= 64 && isValidId(data.lastPromoCode)))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
     function isValidCreditTransaction(data, userId) {
       return data.keys().hasAll(['ownerId', 'amount', 'balanceAfter', 'reason', 'createdAt'])
-        && data.keys().hasOnly(['ownerId', 'amount', 'balanceAfter', 'reason', 'actorEmail', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'amount', 'balanceAfter', 'reason', 'actorEmail', 'promoCode', 'createdAt'])
         && data.ownerId is string
         && data.ownerId == userId
         && isValidId(data.ownerId)
@@ -95,6 +99,7 @@ service cloud.firestore {
         && data.reason.size() >= 1
         && data.reason.size() <= 160
         && (!('actorEmail' in data) || (data.actorEmail is string && data.actorEmail.size() <= 254))
+        && (!('promoCode' in data) || (data.promoCode is string && data.promoCode.size() <= 64 && isValidId(data.promoCode)))
         && data.createdAt is timestamp;
     }
 
@@ -159,6 +164,65 @@ service cloud.firestore {
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 240))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
+    }
+
+    function isValidSharedPack(data) {
+      return data.keys().hasAll(['ownerId', 'authorName', 'title', 'gameVersion', 'loader', 'modCount', 'items', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'authorName', 'title', 'gameVersion', 'loader', 'modCount', 'items', 'createdAt'])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && data.authorName is string
+        && data.authorName.size() >= 1
+        && data.authorName.size() <= 120
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 120
+        && data.gameVersion is string
+        && data.gameVersion.size() >= 1
+        && data.gameVersion.size() <= 40
+        && data.loader in ['fabric', 'forge', 'neoforge', 'quilt']
+        && data.modCount is int
+        && data.modCount >= 1
+        && data.modCount <= 300
+        && data.items is list
+        && data.items.size() >= 1
+        && data.items.size() <= 300
+        && data.items[0] is map
+        && data.createdAt is timestamp;
+    }
+
+    function isValidPromoCode(data, codeId) {
+      return data.keys().hasAll(['code', 'credits', 'maxUses', 'usedCount', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['code', 'credits', 'maxUses', 'usedCount', 'active', 'note', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.code is string
+        && data.code == codeId
+        && data.code.size() >= 3
+        && data.code.size() <= 32
+        && data.code.matches('^[A-Z0-9_-]+$')
+        && data.credits is int && data.credits >= 1 && data.credits <= 500
+        && data.maxUses is int && data.maxUses >= 1 && data.maxUses <= 10000
+        && data.usedCount is int && data.usedCount >= 0 && data.usedCount <= data.maxUses
+        && data.active is bool
+        && (!('note' in data) || (data.note is string && data.note.size() <= 160))
+        && data.createdBy is string && data.createdBy.size() >= 3 && data.createdBy.size() <= 254
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPromoRedemption(data, codeId, userId) {
+      return data.keys().hasAll(['ownerId', 'code', 'creditsGranted', 'redeemedAt'])
+        && data.keys().hasOnly(['ownerId', 'code', 'creditsGranted', 'redeemedAt'])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && isValidId(data.ownerId)
+        && data.code is string
+        && data.code == codeId
+        && data.code.size() >= 3
+        && data.code.size() <= 32
+        && data.creditsGranted is int && data.creditsGranted >= 1 && data.creditsGranted <= 500
+        && data.redeemedAt is timestamp;
     }
 
     function isValidSiteConfig(data) {
@@ -257,6 +321,74 @@ service cloud.firestore {
       }
     }
 
+    // Shareable Modpack Links (PII-free public link read via exact shareId)
+    match /sharedPacks/{shareId} {
+      allow get: if isValidId(shareId);
+      allow list: if (isVerifiedUser() && resource.data.ownerId == request.auth.uid) || isAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(shareId)
+        && isValidSharedPack(incoming())
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && isUserNotBanned(request.auth.uid);
+      allow update: if false;
+      allow delete: if isValidId(shareId)
+        && ((isVerifiedUser() && existing().ownerId == request.auth.uid) || isAdmin());
+    }
+
+    // Promo Codes & Atomic Per-User Redemptions
+    match /promoCodes/{codeId} {
+      allow get: if isVerifiedUser() && isValidId(codeId);
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        && isValidId(codeId)
+        && isValidPromoCode(incoming(), codeId)
+        && incoming().usedCount == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(codeId)
+        && isValidPromoCode(incoming(), codeId)
+        && incoming().code == existing().code
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isVerifiedUser()
+            && existing().active == true
+            && existing().usedCount < existing().maxUses
+            && incoming().credits == existing().credits
+            && incoming().maxUses == existing().maxUses
+            && incoming().active == existing().active
+            && incoming().createdBy == existing().createdBy
+            && incoming().usedCount == existing().usedCount + 1
+            && incoming().diff(existing()).affectedKeys().hasOnly(['usedCount', 'updatedAt'])
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && isUserNotBanned(request.auth.uid)
+            && !exists(/databases/$(database)/documents/promoCodes/$(codeId)/redemptions/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/promoCodes/$(codeId)/redemptions/$(request.auth.uid))
+          )
+        );
+      allow delete: if isAdmin() && isValidId(codeId);
+
+      match /redemptions/{userId} {
+        allow get: if isValidId(codeId) && isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow list: if isAdmin();
+        allow create: if isOwner(userId)
+          && isValidId(codeId)
+          && isValidId(userId)
+          && isValidPromoRedemption(incoming(), codeId, userId)
+          && incoming().redeemedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isUserNotBanned(userId)
+          && get(/databases/$(database)/documents/promoCodes/$(codeId)).data.active == true
+          && incoming().creditsGranted == get(/databases/$(database)/documents/promoCodes/$(codeId)).data.credits
+          && getAfter(/databases/$(database)/documents/promoCodes/$(codeId)).data.usedCount == get(/databases/$(database)/documents/promoCodes/$(codeId)).data.usedCount + 1;
+        allow update, delete: if false;
+      }
+    }
+
     // Users Collection (PII isolated strictly to owner or verified admins)
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
@@ -300,6 +432,32 @@ service cloud.firestore {
             && incoming().credits >= existing().credits - 200
             && incoming().diff(existing()).affectedKeys().hasOnly(['credits', 'updatedAt'])
           )
+          // Owner daily free credit claim (+10 credits once every 24 hours, unbanned only)
+          || (
+            isOwner(userId)
+            && (!('isBanned' in existing()) || existing().isBanned == false)
+            && ('credits' in existing())
+            && existing().credits is int
+            && existing().credits <= 999990
+            && incoming().credits == existing().credits + 10
+            && (!('lastDailyClaimAt' in existing()) || request.time >= existing().lastDailyClaimAt + duration.value(24, 'h'))
+            && incoming().lastDailyClaimAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly(['credits', 'lastDailyClaimAt', 'updatedAt'])
+          )
+          // Owner promo code redemption (atomically backed by promo redemption receipt)
+          || (
+            isOwner(userId)
+            && (!('isBanned' in existing()) || existing().isBanned == false)
+            && ('credits' in existing())
+            && existing().credits is int
+            && ('lastPromoCode' in incoming())
+            && isValidId(incoming().lastPromoCode)
+            && !exists(/databases/$(database)/documents/promoCodes/$(incoming().lastPromoCode)/redemptions/$(userId))
+            && existsAfter(/databases/$(database)/documents/promoCodes/$(incoming().lastPromoCode)/redemptions/$(userId))
+            && getAfter(/databases/$(database)/documents/promoCodes/$(incoming().lastPromoCode)/redemptions/$(userId)).data.redeemedAt == request.time
+            && incoming().credits == existing().credits + get(/databases/$(database)/documents/promoCodes/$(incoming().lastPromoCode)).data.credits
+            && incoming().diff(existing()).affectedKeys().hasOnly(['credits', 'lastPromoCode', 'updatedAt'])
+          )
           // Verified Admin credit adjustment or ban moderation
           || (
             isAdmin()
@@ -318,11 +476,41 @@ service cloud.firestore {
           && isValidId(txId)
           && isValidCreditTransaction(incoming(), userId)
           && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
           && (
-            (isOwner(userId) && incoming().ownerId == request.auth.uid && incoming().amount < 0 && incoming().amount >= -200 && !('actorEmail' in incoming()))
-            || (isAdmin() && request.auth.token.email is string && incoming().actorEmail.lower() == request.auth.token.email.lower())
-          )
-          && exists(/databases/$(database)/documents/users/$(userId));
+            (
+              isOwner(userId)
+              && incoming().ownerId == request.auth.uid
+              && !('actorEmail' in incoming())
+              && !('promoCode' in incoming())
+              && incoming().amount < 0
+              && incoming().amount >= -200
+            )
+            || (
+              isOwner(userId)
+              && incoming().ownerId == request.auth.uid
+              && !('actorEmail' in incoming())
+              && !('promoCode' in incoming())
+              && incoming().amount == 10
+              && getAfter(/databases/$(database)/documents/users/$(userId)).data.lastDailyClaimAt == request.time
+              && getAfter(/databases/$(database)/documents/users/$(userId)).data.credits == get(/databases/$(database)/documents/users/$(userId)).data.credits + 10
+            )
+            || (
+              isOwner(userId)
+              && incoming().ownerId == request.auth.uid
+              && !('actorEmail' in incoming())
+              && ('promoCode' in incoming())
+              && isValidId(incoming().promoCode)
+              && existsAfter(/databases/$(database)/documents/promoCodes/$(incoming().promoCode)/redemptions/$(userId))
+              && getAfter(/databases/$(database)/documents/promoCodes/$(incoming().promoCode)/redemptions/$(userId)).data.redeemedAt == request.time
+              && incoming().amount == getAfter(/databases/$(database)/documents/promoCodes/$(incoming().promoCode)/redemptions/$(userId)).data.creditsGranted
+            )
+            || (
+              isAdmin()
+              && request.auth.token.email is string
+              && incoming().actorEmail.lower() == request.auth.token.email.lower()
+            )
+          );
         allow update, delete: if false;
       }
 

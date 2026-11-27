@@ -43,6 +43,17 @@
           "maxLength": 240,
           "description": "Optional moderation reason set by an admin."
         },
+        "lastDailyClaimAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the user's most recent daily free credit claim."
+        },
+        "lastPromoCode": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Most recently redeemed promo code ID."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -58,7 +69,7 @@
     },
     "CreditTransaction": {
       "title": "CreditTransaction",
-      "description": "Immutable credit spend or admin grant ledger entry for a user.",
+      "description": "Immutable credit spend, daily claim, promo redemption, or admin grant ledger entry for a user.",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -70,7 +81,7 @@
         },
         "amount": {
           "type": "integer",
-          "description": "Signed credit delta (negative for spend, positive/negative for admin adjustment)."
+          "description": "Signed credit delta (negative for spend, positive/negative for claims, promos, or admin adjustment)."
         },
         "balanceAfter": {
           "type": "integer",
@@ -87,6 +98,12 @@
           "format": "email",
           "maxLength": 254,
           "description": "Admin email when created by an admin adjustment."
+        },
+        "promoCode": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Optional promo code identifier for promo redemptions."
         },
         "createdAt": {
           "type": "string",
@@ -345,6 +362,140 @@
         }
       },
       "required": ["actorEmail", "action", "details", "createdAt"]
+    },
+    "SharedPack": {
+      "title": "SharedPack",
+      "description": "Publicly readable shareable modpack list (no user PII stored).",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the creator."
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display name shown on the shared pack page (no email/PII)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Modpack share title."
+        },
+        "gameVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Target Minecraft version."
+        },
+        "loader": {
+          "type": "string",
+          "enum": ["fabric", "forge", "neoforge", "quilt"],
+          "description": "Target mod loader."
+        },
+        "modCount": {
+          "type": "integer",
+          "description": "Total number of mods in the shared pack (1-300)."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list of mod metadata & Modrinth CDN download links (1-300)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when shared link was created."
+        }
+      },
+      "required": ["ownerId", "authorName", "title", "gameVersion", "loader", "modCount", "items", "createdAt"]
+    },
+    "PromoCode": {
+      "title": "PromoCode",
+      "description": "Admin-managed redeemable credit promo code.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9_\\-]+$",
+          "description": "Uppercase promo code matching document ID."
+        },
+        "credits": {
+          "type": "integer",
+          "description": "Credits granted upon redemption (1-500)."
+        },
+        "maxUses": {
+          "type": "integer",
+          "description": "Maximum total redemptions allowed (1-10000)."
+        },
+        "usedCount": {
+          "type": "integer",
+          "description": "Current redemption count."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether the promo code is currently active."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Optional admin label or campaign note."
+        },
+        "createdBy": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "Verified admin email that created the code."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when last updated."
+        }
+      },
+      "required": ["code", "credits", "maxUses", "usedCount", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "PromoRedemption": {
+      "title": "PromoRedemption",
+      "description": "Immutable per-user promo code redemption receipt preventing double-claims.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID matching document ID."
+        },
+        "code": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9_\\-]+$",
+          "description": "Promo code ID."
+        },
+        "creditsGranted": {
+          "type": "integer",
+          "description": "Credits granted on redemption."
+        },
+        "redeemedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of redemption."
+        }
+      },
+      "required": ["ownerId", "code", "creditsGranted", "redeemedAt"]
     }
   },
   "firestore": {
@@ -358,7 +509,7 @@
       "schema": {
         "$ref": "#/entities/CreditTransaction"
       },
-      "description": "Immutable credit ledger for spend receipts and admin grants."
+      "description": "Immutable credit ledger for spend receipts, daily claims, promo redemptions, and admin grants."
     },
     "/users/{userId}/migrations/{migrationId}": {
       "schema": {
@@ -371,6 +522,24 @@
         "$ref": "#/entities/TrackedMod"
       },
       "description": "Private user mod library entries owned by userId (manageable by verified admins)."
+    },
+    "/sharedPacks/{shareId}": {
+      "schema": {
+        "$ref": "#/entities/SharedPack"
+      },
+      "description": "Shareable modpack links readable by direct link (get) and listed/managed by owner or admins."
+    },
+    "/promoCodes/{codeId}": {
+      "schema": {
+        "$ref": "#/entities/PromoCode"
+      },
+      "description": "Admin-managed credit promo codes (direct get by verified users, list/create/delete by admins)."
+    },
+    "/promoCodes/{codeId}/redemptions/{userId}": {
+      "schema": {
+        "$ref": "#/entities/PromoRedemption"
+      },
+      "description": "Immutable per-user promo redemption lock preventing repeat claims."
     },
     "/siteConfig/{configId}": {
       "schema": {

@@ -2,14 +2,19 @@ import {
   AlertCircle,
   AlertTriangle,
   Ban,
+  Check,
   CheckCircle2,
   Coins,
+  Copy,
   Database,
   FileText,
   History,
   Info,
   Loader2,
   Megaphone,
+  PauseCircle,
+  PlayCircle,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
@@ -17,6 +22,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sliders,
+  Ticket,
   Trash2,
   User as UserIcon,
   Wrench,
@@ -36,6 +42,11 @@ import {
 import {
   adminAdjustUserCredits,
   adminSetUserBanStatus,
+  createPromoCode,
+  deletePromoCode,
+  subscribeToPromoCodes,
+  togglePromoCodeActive,
+  type PromoCodeRecord,
 } from '../services/creditsService';
 import { getCurseForgeStatus } from '../services/providers/curseforgeClient';
 import {
@@ -50,7 +61,7 @@ import {
 import type { ModLoader } from '../types/migration';
 import { formatLoaderName } from '../utils/format';
 
-type AdminTab = 'controls' | 'news' | 'database' | 'audit';
+type AdminTab = 'controls' | 'news' | 'database' | 'promos' | 'audit';
 
 interface AdminPanelProps {
   siteConfig: SiteConfig;
@@ -183,6 +194,17 @@ export function AdminPanel({ siteConfig }: AdminPanelProps) {
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
 
+  // Promo codes state
+  const [promoCodes, setPromoCodes] = useState<PromoCodeRecord[]>([]);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [newPromoCode, setNewPromoCode] = useState('');
+  const [newPromoCredits, setNewPromoCredits] = useState('25');
+  const [newPromoMaxUses, setNewPromoMaxUses] = useState('50');
+  const [newPromoNote, setNewPromoNote] = useState('');
+  const [creatingPromo, setCreatingPromo] = useState(false);
+  const [copiedPromoCode, setCopiedPromoCode] = useState<string | null>(null);
+  const [busyPromoCode, setBusyPromoCode] = useState<string | null>(null);
+
   // Audit logs state
   const [auditLogs, setAuditLogs] = useState<AdminAuditLogRecord[]>([]);
   const [auditError, setAuditError] = useState<string | null>(null);
@@ -236,9 +258,10 @@ export function AdminPanel({ siteConfig }: AdminPanelProps) {
   useEffect(() => {
     if (!authorized || !user) {
       setAuditLogs([]);
+      setPromoCodes([]);
       return;
     }
-    const unsub = subscribeToAuditLogs(
+    const unsubAudit = subscribeToAuditLogs(
       (logs) => {
         setAuditLogs(logs);
         setAuditError(null);
@@ -247,7 +270,19 @@ export function AdminPanel({ siteConfig }: AdminPanelProps) {
         setAuditError(err.message);
       },
     );
-    return () => unsub();
+    const unsubPromos = subscribeToPromoCodes(
+      (list) => {
+        setPromoCodes(list);
+        setPromoError(null);
+      },
+      (err) => {
+        setPromoError(err.message);
+      },
+    );
+    return () => {
+      unsubAudit();
+      unsubPromos();
+    };
   }, [authorized, user]);
 
   const filteredUsers = useMemo(() => {
@@ -620,6 +655,21 @@ export function AdminPanel({ siteConfig }: AdminPanelProps) {
           >
             <Database className="h-3.5 w-3.5" aria-hidden="true" />
             <span className="tabular-nums">Database Data ({users.length})</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'promos'}
+            onClick={() => setTab('promos')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+              tab === 'promos'
+                ? 'bg-white text-zinc-950 shadow-xs dark:bg-zinc-800 dark:text-zinc-50'
+                : 'text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
+            }`}
+          >
+            <Ticket className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="tabular-nums">Promo Codes ({promoCodes.length})</span>
           </button>
 
           <button
@@ -1575,7 +1625,286 @@ export function AdminPanel({ siteConfig }: AdminPanelProps) {
         </div>
       )}
 
-      {/* TAB 4: Audit Log */}
+      {/* TAB 4: Promo Codes */}
+      {tab === 'promos' && (
+        <div className="grid gap-6 lg:grid-cols-12">
+          <div className="rounded-xl border border-zinc-200 bg-white p-6 lg:col-span-5 dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50">
+              Create Promo Code
+            </h2>
+            <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+              Issue single-use-per-account bonus credit codes for community events or tester rewards.
+            </p>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!user || creatingPromo) return;
+                setCreatingPromo(true);
+                setPromoError(null);
+                try {
+                  await createPromoCode(user, {
+                    code: newPromoCode,
+                    credits: Number(newPromoCredits),
+                    maxUses: Number(newPromoMaxUses),
+                    note: newPromoNote,
+                  });
+                  setNewPromoCode('');
+                  setNewPromoNote('');
+                } catch (err) {
+                  setPromoError(
+                    err instanceof Error && !err.message.startsWith('{')
+                      ? err.message
+                      : 'Unable to create promo code.',
+                  );
+                } finally {
+                  setCreatingPromo(false);
+                }
+              }}
+              className="mt-4 space-y-4"
+            >
+              <div>
+                <label
+                  htmlFor="admin-promo-code"
+                  className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                >
+                  Promo Code (3–32 chars, A-Z / 0-9 / - / _)
+                </label>
+                <input
+                  id="admin-promo-code"
+                  type="text"
+                  required
+                  maxLength={32}
+                  value={newPromoCode}
+                  onChange={(e) => setNewPromoCode(e.target.value.toUpperCase())}
+                  placeholder="MODSHIFT-LAUNCH"
+                  className="mt-1.5 min-h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 font-mono text-xs uppercase text-zinc-950 focus:border-emerald-600 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="admin-promo-credits"
+                    className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                  >
+                    Credits (1–500)
+                  </label>
+                  <input
+                    id="admin-promo-credits"
+                    type="number"
+                    min={1}
+                    max={500}
+                    required
+                    value={newPromoCredits}
+                    onChange={(e) => setNewPromoCredits(e.target.value)}
+                    className="mt-1.5 min-h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 font-mono text-xs text-zinc-950 focus:border-emerald-600 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="admin-promo-maxuses"
+                    className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                  >
+                    Max Uses (1–10,000)
+                  </label>
+                  <input
+                    id="admin-promo-maxuses"
+                    type="number"
+                    min={1}
+                    max={10000}
+                    required
+                    value={newPromoMaxUses}
+                    onChange={(e) => setNewPromoMaxUses(e.target.value)}
+                    className="mt-1.5 min-h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 font-mono text-xs text-zinc-950 focus:border-emerald-600 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="admin-promo-note"
+                  className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                >
+                  Internal Note (Optional)
+                </label>
+                <input
+                  id="admin-promo-note"
+                  type="text"
+                  maxLength={160}
+                  value={newPromoNote}
+                  onChange={(e) => setNewPromoNote(e.target.value)}
+                  placeholder="Discord launch reward..."
+                  className="mt-1.5 min-h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 text-xs text-zinc-950 focus:border-emerald-600 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                />
+              </div>
+
+              {promoError && (
+                <p className="text-xs font-medium text-red-700 dark:text-red-400">
+                  {promoError}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={creatingPromo || !newPromoCode.trim()}
+                className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {creatingPromo ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>Create Promo Code</span>
+              </button>
+            </form>
+          </div>
+
+          <div className="rounded-xl border border-zinc-200 bg-white p-6 lg:col-span-7 dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50">
+              Active &amp; Past Promo Codes ({promoCodes.length})
+            </h2>
+            <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+              Redemptions are atomically tracked per user ID in Firestore so each user can claim a code at most once.
+            </p>
+
+            {promoCodes.length === 0 ? (
+              <p className="mt-4 rounded-lg border border-dashed border-zinc-200 p-6 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                No promo codes created yet.
+              </p>
+            ) : (
+              <div className="mt-4 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+                {promoCodes.map((promo) => {
+                  const busy = busyPromoCode === promo.code;
+                  return (
+                    <div
+                      key={promo.code}
+                      className="flex flex-col gap-3 p-4 text-xs sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-sm font-bold text-zinc-950 dark:text-zinc-50">
+                            {promo.code}
+                          </span>
+                          <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-400">
+                            +{promo.credits} cr
+                          </span>
+                          <span
+                            className={`text-[11px] font-medium ${
+                              promo.active
+                                ? 'text-emerald-700 dark:text-emerald-400'
+                                : 'text-zinc-500 dark:text-zinc-400'
+                            }`}
+                          >
+                            · {promo.active ? 'Active' : 'Paused'}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400">
+                          Used {promo.usedCount} / {promo.maxUses} times
+                          {promo.note ? ` · ${promo.note}` : ''}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(promo.code);
+                            setCopiedPromoCode(promo.code);
+                            setTimeout(() => {
+                              setCopiedPromoCode((curr) =>
+                                curr === promo.code ? null : curr,
+                              );
+                            }, 1800);
+                          }}
+                          className="inline-flex min-h-8 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+                        >
+                          {copiedPromoCode === promo.code ? (
+                            <>
+                              <Check className="h-3 w-3 text-emerald-600" aria-hidden="true" />
+                              <span>Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" aria-hidden="true" />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!user) return;
+                            setBusyPromoCode(promo.code);
+                            setPromoError(null);
+                            try {
+                              await togglePromoCodeActive(
+                                user,
+                                promo.code,
+                                !promo.active,
+                              );
+                            } catch (err) {
+                              setPromoError(
+                                err instanceof Error
+                                  ? err.message
+                                  : 'Could not update promo status.',
+                              );
+                            } finally {
+                              setBusyPromoCode(null);
+                            }
+                          }}
+                          className="inline-flex min-h-8 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+                        >
+                          {promo.active ? (
+                            <>
+                              <PauseCircle className="h-3 w-3" aria-hidden="true" />
+                              <span>Pause</span>
+                            </>
+                          ) : (
+                            <>
+                              <PlayCircle className="h-3 w-3" aria-hidden="true" />
+                              <span>Resume</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!user) return;
+                            setBusyPromoCode(promo.code);
+                            setPromoError(null);
+                            try {
+                              await deletePromoCode(user, promo.code);
+                            } catch (err) {
+                              setPromoError(
+                                err instanceof Error
+                                  ? err.message
+                                  : 'Could not delete promo code.',
+                              );
+                            } finally {
+                              setBusyPromoCode(null);
+                            }
+                          }}
+                          aria-label={`Delete promo code ${promo.code}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 text-red-700 hover:bg-red-50 disabled:opacity-40 dark:border-zinc-700 dark:text-red-400 dark:hover:bg-red-950/30"
+                        >
+                          <Trash2 className="h-3 w-3" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: Audit Log */}
       {tab === 'audit' && (
         <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
           <h2 className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50">

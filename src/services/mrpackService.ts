@@ -223,6 +223,12 @@ async function resolveLoaderDependency(
   return dependencies;
 }
 
+function mapMrpackSide(value?: string | null): 'required' | 'optional' | 'unsupported' {
+  if (value === 'optional') return 'optional';
+  if (value === 'unsupported') return 'unsupported';
+  return 'required';
+}
+
 /**
  * Generates and downloads a Modrinth-compliant .mrpack archive containing all ready
  * migration targets (referencing official Modrinth CDN URLs and hashes).
@@ -231,8 +237,9 @@ export async function exportMrpackArchive(
   results: ModMigrationResult[],
   config: MigrationTargetConfig,
   packName?: string,
-): Promise<{ exportedCount: number; filename: string }> {
-  const readyWithFiles = results.filter(
+  options?: { serverOnly?: boolean },
+): Promise<{ exportedCount: number; filename: string; skippedClientOnly: number }> {
+  const allReadyWithFiles = results.filter(
     (r) =>
       r.category === 'ready' &&
       r.targetFile?.url &&
@@ -240,8 +247,20 @@ export async function exportMrpackArchive(
       r.targetFile.hashes?.sha1,
   );
 
+  const serverOnly = options?.serverOnly === true;
+  const readyWithFiles = serverOnly
+    ? allReadyWithFiles.filter((r) => r.project?.server_side !== 'unsupported')
+    : allReadyWithFiles;
+  const skippedClientOnly = serverOnly
+    ? allReadyWithFiles.length - readyWithFiles.length
+    : 0;
+
   if (readyWithFiles.length === 0) {
-    throw new Error('No ready Modrinth mods with verified hashes and download URLs are available to export as .mrpack.');
+    throw new Error(
+      serverOnly
+        ? 'No server-compatible Modrinth mods with verified hashes are available to export.'
+        : 'No ready Modrinth mods with verified hashes and download URLs are available to export as .mrpack.',
+    );
   }
 
   const seenPaths = new Set<string>();
@@ -265,8 +284,8 @@ export async function exportMrpackArchive(
         path,
         hashes,
         env: {
-          client: 'required',
-          server: 'required',
+          client: mapMrpackSide(r.project?.client_side),
+          server: mapMrpackSide(r.project?.server_side),
         },
         downloads: [r.targetFile!.url],
         fileSize: r.targetFile!.size,
@@ -314,5 +333,6 @@ export async function exportMrpackArchive(
   return {
     exportedCount: indexFiles.length,
     filename: archiveName,
+    skippedClientOnly,
   };
 }

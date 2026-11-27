@@ -12,6 +12,7 @@ import {
   FileText,
   HelpCircle,
   Info,
+  Loader2,
   RefreshCw,
   RotateCcw,
   Search,
@@ -26,12 +27,19 @@ import {
   triggerDirectDownload,
 } from '../services/downloadService';
 import { getResultProjectLink } from '../services/migrationEngine';
+import { modrinthClient } from '../services/providers/modrinthClient';
 import type {
   MigrationTargetConfig,
   ModMigrationResult,
   ResolvedDependency,
 } from '../types/migration';
 import { formatBytes, formatLoaderName } from '../utils/format';
+import {
+  classifyModEnvironment,
+  getModEnvironmentLabel,
+  matchesEnvironmentFilter,
+  type EnvironmentFilter,
+} from '../utils/modEnvironment';
 import { BulkDownloadPanel } from './BulkDownloadPanel';
 import { DependencyPanel } from './DependencyPanel';
 
@@ -55,7 +63,7 @@ interface ResultsDashboardProps {
   onOpenManualSearch: (result: ModMigrationResult) => void;
   onAddDependency: (dep: ResolvedDependency) => void;
   onClearResults: () => void;
-  onExportMrpack?: () => Promise<void> | void;
+  onExportMrpack?: (options?: { serverOnly?: boolean }) => Promise<void> | void;
   isExportingMrpack?: boolean;
   mrpackCreditCost?: number;
   creditsEnabled?: boolean;
@@ -82,17 +90,62 @@ export function ResultsDashboard({
   userCredits = 50,
 }: ResultsDashboardProps) {
   const [activeTab, setActiveTab] = useState<DashboardTab>('all');
+  const [envFilter, setEnvFilter] = useState<EnvironmentFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedHashId, setCopiedHashId] = useState<string | null>(null);
   const [expandedChangelogs, setExpandedChangelogs] = useState<Record<string, boolean>>({});
+  const [changelogCache, setChangelogCache] = useState<Record<string, string>>({});
+  const [loadingChangelogs, setLoadingChangelogs] = useState<Record<string, boolean>>({});
 
   const conflicts = useMemo(
     () => analyzeModConflicts(results, dependencies, config),
     [results, dependencies, config],
   );
 
-  const toggleChangelog = (id: string) => {
-    setExpandedChangelogs((prev) => ({ ...prev, [id]: !prev[id] }));
+  const getChangelogText = (res: ModMigrationResult): string | undefined => {
+    const inline = res.targetVersion?.changelog?.trim();
+    if (inline) return inline;
+    return changelogCache[res.id];
+  };
+
+  const canFetchChangelog = (res: ModMigrationResult): boolean => {
+    if (getChangelogText(res)) return true;
+    return (
+      res.provider === 'Modrinth' &&
+      Boolean(res.targetVersion?.id) &&
+      !res.targetVersion!.id.startsWith('saved-ver-')
+    );
+  };
+
+  const toggleChangelog = async (res: ModMigrationResult) => {
+    const nextOpen = !expandedChangelogs[res.id];
+    setExpandedChangelogs((prev) => ({ ...prev, [res.id]: nextOpen }));
+
+    if (
+      nextOpen &&
+      !getChangelogText(res) &&
+      res.provider === 'Modrinth' &&
+      res.targetVersion?.id &&
+      !res.targetVersion.id.startsWith('saved-ver-') &&
+      !loadingChangelogs[res.id]
+    ) {
+      const versionId = res.targetVersion.id;
+      setLoadingChangelogs((prev) => ({ ...prev, [res.id]: true }));
+      try {
+        const version = await modrinthClient.getVersion(versionId);
+        const notes =
+          version.changelog?.trim() ||
+          'No release changelog notes were provided for this version.';
+        setChangelogCache((prev) => ({ ...prev, [res.id]: notes }));
+      } catch {
+        setChangelogCache((prev) => ({
+          ...prev,
+          [res.id]: 'Unable to load release changelog from Modrinth right now.',
+        }));
+      } finally {
+        setLoadingChangelogs((prev) => ({ ...prev, [res.id]: false }));
+      }
+    }
   };
 
   const counts = useMemo(() => {
@@ -120,8 +173,9 @@ export function ResultsDashboard({
 
   const filteredResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return results;
     return results.filter((r) => {
+      if (!matchesEnvironmentFilter(r.project, envFilter)) return false;
+      if (!q) return true;
       const modName = r.project?.title?.toLowerCase() ?? '';
       const fileName = r.localFile.name.toLowerCase();
       const targetName = r.targetFile?.filename.toLowerCase() ?? '';
@@ -133,7 +187,7 @@ export function ResultsDashboard({
         sha1.includes(q)
       );
     });
-  }, [results, searchQuery]);
+  }, [results, envFilter, searchQuery]);
 
   const readyList = useMemo(
     () => filteredResults.filter((r) => r.category === 'ready'),
@@ -159,6 +213,14 @@ export function ResultsDashboard({
   const allReadyUnfiltered = useMemo(
     () => results.filter((r) => r.category === 'ready'),
     [results],
+  );
+
+  const bulkReadyFiltered = useMemo(
+    () =>
+      allReadyUnfiltered.filter((r) =>
+        matchesEnvironmentFilter(r.project, envFilter),
+      ),
+    [allReadyUnfiltered, envFilter],
   );
 
   const handleCopyHash = async (id: string, sha1: string) => {
@@ -327,8 +389,9 @@ export function ResultsDashboard({
 
       {/* Bulk Download Bar */}
       <BulkDownloadPanel
-        readyResults={allReadyUnfiltered}
+        readyResults={bulkReadyFiltered}
         config={config}
+        serverOnlyExport={envFilter === 'server_compatible'}
         onExportMrpack={onExportMrpack}
         isExportingMrpack={isExportingMrpack}
         mrpackCreditCost={mrpackCreditCost}
@@ -372,57 +435,96 @@ export function ResultsDashboard({
         </section>
       )}
 
-      {/* Filter Tabs & Search */}
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div
-          role="tablist"
-          aria-label="Filter migration results"
-          className="flex items-center gap-1 overflow-x-auto rounded-lg border border-zinc-200 bg-zinc-100 p-1 dark:border-zinc-800 dark:bg-zinc-900"
-        >
-          {(
-            [
-              { id: 'all', label: `All (${counts.total})` },
-              { id: 'ready', label: `Ready (${counts.ready})` },
-              { id: 'dependencies', label: `Dependencies (${dependencies.length})` },
-              { id: 'needs_review', label: `Needs Review (${counts.needsReview})` },
-              { id: 'no_update', label: `No Update (${counts.noUpdate})` },
-              { id: 'not_found', label: `Not Found (${counts.notFound})` },
-              { id: 'failed', label: `Failed (${counts.failed})` },
-            ] as const
-          ).map((tab) => {
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setActiveTab(tab.id)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
-                  active
-                    ? 'bg-white text-zinc-950 shadow-xs dark:bg-zinc-800 dark:text-zinc-50'
-                    : 'text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
+      {/* Filter Tabs, Environment Split & Search */}
+      <div className="space-y-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div
+            role="tablist"
+            aria-label="Filter migration results"
+            className="flex items-center gap-1 overflow-x-auto rounded-lg border border-zinc-200 bg-zinc-100 p-1 dark:border-zinc-800 dark:bg-zinc-900"
+          >
+            {(
+              [
+                { id: 'all', label: `All (${counts.total})` },
+                { id: 'ready', label: `Ready (${counts.ready})` },
+                { id: 'dependencies', label: `Dependencies (${dependencies.length})` },
+                { id: 'needs_review', label: `Needs Review (${counts.needsReview})` },
+                { id: 'no_update', label: `No Update (${counts.noUpdate})` },
+                { id: 'not_found', label: `Not Found (${counts.notFound})` },
+                { id: 'failed', label: `Failed (${counts.failed})` },
+              ] as const
+            ).map((tab) => {
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+                    active
+                      ? 'bg-white text-zinc-950 shadow-xs dark:bg-zinc-800 dark:text-zinc-50'
+                      : 'text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="relative w-full lg:w-72">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search mod name, file, or hash..."
+              aria-label="Search migration results"
+              className="w-full rounded-lg border border-zinc-200 bg-white py-2 pl-8 pr-3 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-emerald-600 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"
+            />
+          </div>
         </div>
 
-        <div className="relative w-full lg:w-72">
-          <Search
-            className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search mod name, file, or hash..."
-            aria-label="Search migration results"
-            className="w-full rounded-lg border border-zinc-200 bg-white py-2 pl-8 pr-3 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-emerald-600 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"
-          />
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div
+            role="group"
+            aria-label="Client vs server compatibility filter"
+            className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 bg-zinc-100 p-1 dark:border-zinc-800 dark:bg-zinc-900"
+          >
+            {(
+              [
+                { id: 'all', label: 'All Environments' },
+                { id: 'server_compatible', label: 'Server-Compatible Only' },
+                { id: 'client_only', label: 'Client-Only' },
+              ] as const
+            ).map((opt) => {
+              const active = envFilter === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setEnvFilter(opt.id)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
+                    active
+                      ? 'bg-white text-zinc-950 shadow-xs dark:bg-zinc-800 dark:text-zinc-50'
+                      : 'text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          {envFilter === 'server_compatible' && (
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              Client-only mods are hidden and excluded from bulk downloads &amp; server .mrpack export.
+            </span>
+          )}
         </div>
       </div>
 
@@ -467,8 +569,11 @@ export function ResultsDashboard({
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
                   {readyList.map((res) => {
                     const projectUrl = getResultProjectLink(res);
-                    const changelogText = res.targetVersion?.changelog?.trim();
+                    const changelogText = getChangelogText(res);
+                    const hasNotesButton = canFetchChangelog(res);
+                    const isChangelogLoading = Boolean(loadingChangelogs[res.id]);
                     const isChangelogOpen = Boolean(expandedChangelogs[res.id]);
+                    const envTag = classifyModEnvironment(res.project);
                     return (
                       <Fragment key={res.id}>
                         <tr className="hover:bg-zinc-50/80 dark:hover:bg-zinc-800/30">
@@ -498,6 +603,19 @@ export function ResultsDashboard({
                               {res.isDependencyAddition
                                 ? `Added dependency · ${res.targetFile?.filename ?? ''}`
                                 : res.localFile.name}
+                              {envTag !== 'unknown' && (
+                                <span
+                                  className={`ml-2 font-sans font-medium ${
+                                    envTag === 'client_only'
+                                      ? 'text-amber-700 dark:text-amber-400'
+                                      : envTag === 'server_only'
+                                      ? 'text-sky-700 dark:text-sky-400'
+                                      : 'text-zinc-500 dark:text-zinc-400'
+                                  }`}
+                                >
+                                  · {getModEnvironmentLabel(envTag)}
+                                </span>
+                              )}
                             </p>
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap text-zinc-700 dark:text-zinc-300">
@@ -517,14 +635,18 @@ export function ResultsDashboard({
                           </td>
                           <td className="px-5 py-3 text-right">
                             <div className="inline-flex items-center justify-end gap-1.5">
-                              {changelogText && (
+                              {hasNotesButton && (
                                 <button
                                   type="button"
-                                  onClick={() => toggleChangelog(res.id)}
+                                  onClick={() => void toggleChangelog(res)}
                                   aria-expanded={isChangelogOpen}
                                   className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 whitespace-nowrap shrink-0 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800"
                                 >
-                                  <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                                  {isChangelogLoading ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                                  ) : (
+                                    <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                                  )}
                                   <span>Notes</span>
                                   {isChangelogOpen ? (
                                     <ChevronUp className="h-3 w-3" aria-hidden="true" />
@@ -550,15 +672,22 @@ export function ResultsDashboard({
                             </div>
                           </td>
                         </tr>
-                        {changelogText && isChangelogOpen && (
+                        {isChangelogOpen && (
                           <tr className="bg-zinc-50/70 dark:bg-zinc-950/50">
                             <td colSpan={6} className="px-5 py-3">
                               <p className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
                                 Release Changelog ({res.targetVersion?.version_number})
                               </p>
-                              <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-                                {changelogText}
-                              </p>
+                              {isChangelogLoading && !changelogText ? (
+                                <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-zinc-500">
+                                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                                  <span>Fetching release notes from Modrinth...</span>
+                                </p>
+                              ) : (
+                                <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">
+                                  {changelogText || 'No release changelog available.'}
+                                </p>
+                              )}
                             </td>
                           </tr>
                         )}
@@ -611,8 +740,11 @@ export function ResultsDashboard({
             <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
               {needsReviewList.map((res) => {
                 const projectUrl = getResultProjectLink(res);
-                const changelogText = res.targetVersion?.changelog?.trim();
+                const changelogText = getChangelogText(res);
+                const hasNotesButton = canFetchChangelog(res);
+                const isChangelogLoading = Boolean(loadingChangelogs[res.id]);
                 const isChangelogOpen = Boolean(expandedChangelogs[res.id]);
+                const envTag = classifyModEnvironment(res.project);
                 return (
                   <li
                     key={res.id}
@@ -639,6 +771,11 @@ export function ResultsDashboard({
                           <span className="font-mono text-xs text-zinc-500 dark:text-zinc-400">
                             · {res.localFile.name}
                           </span>
+                          {envTag !== 'unknown' && (
+                            <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                              · {getModEnvironmentLabel(envTag)}
+                            </span>
+                          )}
                           {res.targetVersion && (
                             <span className="font-mono text-xs text-amber-700 dark:text-amber-400">
                               · {res.targetVersion.version_number} ({res.targetVersion.version_type})
@@ -651,14 +788,18 @@ export function ResultsDashboard({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        {changelogText && (
+                        {hasNotesButton && (
                           <button
                             type="button"
-                            onClick={() => toggleChangelog(res.id)}
+                            onClick={() => void toggleChangelog(res)}
                             aria-expanded={isChangelogOpen}
                             className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 whitespace-nowrap shrink-0 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800"
                           >
-                            <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                            {isChangelogLoading ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                            )}
                             <span>Notes</span>
                           </button>
                         )}
@@ -699,14 +840,21 @@ export function ResultsDashboard({
                       </div>
                     </div>
 
-                    {changelogText && isChangelogOpen && (
+                    {isChangelogOpen && (
                       <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
                         <p className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
                           Release Changelog ({res.targetVersion?.version_number})
                         </p>
-                        <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-                          {changelogText}
-                        </p>
+                        {isChangelogLoading && !changelogText ? (
+                          <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-zinc-500">
+                            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                            <span>Fetching release notes from Modrinth...</span>
+                          </p>
+                        ) : (
+                          <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">
+                            {changelogText || 'No release changelog available.'}
+                          </p>
+                        )}
                       </div>
                     )}
                   </li>

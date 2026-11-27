@@ -27,10 +27,14 @@ export interface SavedMigrationItemSnapshot {
   projectId: string | null;
   projectTitle: string | null;
   projectSlug: string | null;
+  clientSide?: string | null;
+  serverSide?: string | null;
+  targetVersionId?: string | null;
   targetVersionNumber: string | null;
   targetFilename: string | null;
   targetUrl: string | null;
   targetFileSize: number | null;
+  targetSha1?: string | null;
   explanation: string;
 }
 
@@ -152,6 +156,9 @@ export async function saveMigrationSnapshot(
     projectId: r.project?.id ? clampString(r.project.id, 64) : null,
     projectTitle: r.project?.title ? clampString(r.project.title, 120) : null,
     projectSlug: r.project?.slug ? clampString(r.project.slug, 120) : null,
+    clientSide: r.project?.client_side ? clampString(r.project.client_side, 32) : null,
+    serverSide: r.project?.server_side ? clampString(r.project.server_side, 32) : null,
+    targetVersionId: r.targetVersion?.id ? clampString(r.targetVersion.id, 64) : null,
     targetVersionNumber: r.targetVersion?.version_number
       ? clampString(r.targetVersion.version_number, 80)
       : null,
@@ -160,6 +167,9 @@ export async function saveMigrationSnapshot(
       : null,
     targetUrl: r.targetFile?.url ? clampString(r.targetFile.url, 512) : null,
     targetFileSize: r.targetFile?.size ? Math.max(0, Math.floor(r.targetFile.size)) : null,
+    targetSha1: r.targetFile?.hashes?.sha1
+      ? clampString(r.targetFile.hashes.sha1, 64)
+      : null,
     explanation: clampString(r.explanation, 320),
   }));
 
@@ -225,11 +235,13 @@ export function hydrateSavedMigrationResults(
             project_type: 'mod',
             title: item.projectTitle ?? cleanName,
             description: '',
+            client_side: item.clientSide ?? undefined,
+            server_side: item.serverSide ?? undefined,
           }
         : undefined,
       targetVersion: item.targetVersionNumber
         ? {
-            id: `saved-ver-${idx}`,
+            id: item.targetVersionId ?? `saved-ver-${idx}`,
             project_id: item.projectId ?? '',
             name: item.targetVersionNumber,
             version_number: item.targetVersionNumber,
@@ -245,7 +257,7 @@ export function hydrateSavedMigrationResults(
       targetFile:
         item.targetUrl && item.targetFilename
           ? {
-              hashes: {},
+              hashes: item.targetSha1 ? { sha1: item.targetSha1 } : {},
               url: item.targetUrl,
               filename: item.targetFilename,
               primary: true,

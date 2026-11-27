@@ -11,6 +11,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  type Timestamp,
 } from 'firebase/firestore';
 import {
   createContext,
@@ -39,6 +40,7 @@ interface AuthContextValue {
   user: User | null;
   isAdmin: boolean;
   credits: number;
+  lastDailyClaimAt: Date | null;
   isBanned: boolean;
   banReason: string | null;
   profileReady: boolean;
@@ -222,6 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [credits, setCredits] = useState<number>(STARTER_CREDITS);
+  const [lastDailyClaimAt, setLastDailyClaimAt] = useState<Date | null>(null);
   const [isBanned, setIsBanned] = useState(false);
   const [banReason, setBanReason] = useState<string | null>(null);
   const [profileReady, setProfileReady] = useState(false);
@@ -235,6 +238,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         activeUidRef.current = null;
         setUser(null);
         setCredits(STARTER_CREDITS);
+        setLastDailyClaimAt(null);
         setIsBanned(false);
         setBanReason(null);
         setProfileReady(false);
@@ -252,6 +256,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (isUidSwitch) {
           setProfileReady(false);
           setCredits(STARTER_CREDITS);
+          setLastDailyClaimAt(null);
           setIsBanned(false);
           setBanReason(null);
         }
@@ -276,6 +281,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         activeUidRef.current = null;
         setUser(null);
         setCredits(STARTER_CREDITS);
+        setLastDailyClaimAt(null);
         setIsBanned(false);
         setBanReason(null);
         setProfileReady(false);
@@ -297,6 +303,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const data = snap.data();
           setCredits(
             typeof data.credits === 'number' ? data.credits : STARTER_CREDITS,
+          );
+          const rawClaim = data.lastDailyClaimAt as Timestamp | undefined;
+          setLastDailyClaimAt(
+            rawClaim && typeof rawClaim.toDate === 'function'
+              ? rawClaim.toDate()
+              : null,
           );
           setIsBanned(data.isBanned === true);
           setBanReason(
@@ -368,6 +380,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       isAdmin,
       credits,
+      lastDailyClaimAt,
       isBanned,
       banReason,
       profileReady,
@@ -382,6 +395,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       isAdmin,
       credits,
+      lastDailyClaimAt,
       isBanned,
       banReason,
       profileReady,
